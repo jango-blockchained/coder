@@ -6265,13 +6265,29 @@ SELECT
 			AND pj.organization_id = pd.organization_id
 			AND pj.provisioner = ANY(pd.provisioners)
 			AND provisioner_tagset_contains(pd.tags, pj.tags)
-	) AS available_workers
+	) AS available_workers,
+	-- Include template and workspace information.
+	COALESCE(tv.name, '') AS template_version_name,
+	t.id AS template_id,
+	COALESCE(t.name, '') AS template_name,
+	COALESCE(t.display_name, '') AS template_display_name,
+	w.id AS workspace_id,
+	COALESCE(w.name, '') AS workspace_name
 FROM
 	provisioner_jobs pj
 LEFT JOIN
 	queue_position qp ON qp.id = pj.id
 LEFT JOIN
 	queue_size qs ON TRUE
+LEFT JOIN
+	workspace_builds wb ON wb.id = CASE WHEN pj.input ? 'workspace_build_id' THEN (pj.input->>'workspace_build_id')::uuid END
+LEFT JOIN
+	workspaces w ON wb.workspace_id = w.id
+LEFT JOIN
+	-- We should always have a template version, either explicitly or implicitly via workspace build.
+	template_versions tv ON tv.id = CASE WHEN pj.input ? 'template_version_id' THEN (pj.input->>'template_version_id')::uuid ELSE wb.template_version_id END
+LEFT JOIN
+	templates t ON tv.template_id = t.id
 WHERE
 	($1::uuid IS NULL OR pj.organization_id = $1)
 	AND (COALESCE(array_length($2::uuid[], 1), 0) = 0 OR pj.id = ANY($2::uuid[]))
@@ -6279,7 +6295,13 @@ WHERE
 GROUP BY
 	pj.id,
 	qp.queue_position,
-	qs.count
+	qs.count,
+	tv.name,
+	t.id,
+	t.name,
+	t.display_name,
+	w.id,
+	w.name
 ORDER BY
 	pj.created_at DESC
 LIMIT
@@ -6294,10 +6316,16 @@ type GetProvisionerJobsByOrganizationAndStatusWithQueuePositionAndProvisionerPar
 }
 
 type GetProvisionerJobsByOrganizationAndStatusWithQueuePositionAndProvisionerRow struct {
-	ProvisionerJob   ProvisionerJob `db:"provisioner_job" json:"provisioner_job"`
-	QueuePosition    int64          `db:"queue_position" json:"queue_position"`
-	QueueSize        int64          `db:"queue_size" json:"queue_size"`
-	AvailableWorkers []uuid.UUID    `db:"available_workers" json:"available_workers"`
+	ProvisionerJob      ProvisionerJob `db:"provisioner_job" json:"provisioner_job"`
+	QueuePosition       int64          `db:"queue_position" json:"queue_position"`
+	QueueSize           int64          `db:"queue_size" json:"queue_size"`
+	AvailableWorkers    []uuid.UUID    `db:"available_workers" json:"available_workers"`
+	TemplateVersionName string         `db:"template_version_name" json:"template_version_name"`
+	TemplateID          uuid.NullUUID  `db:"template_id" json:"template_id"`
+	TemplateName        string         `db:"template_name" json:"template_name"`
+	TemplateDisplayName string         `db:"template_display_name" json:"template_display_name"`
+	WorkspaceID         uuid.NullUUID  `db:"workspace_id" json:"workspace_id"`
+	WorkspaceName       string         `db:"workspace_name" json:"workspace_name"`
 }
 
 func (q *sqlQuerier) GetProvisionerJobsByOrganizationAndStatusWithQueuePositionAndProvisioner(ctx context.Context, arg GetProvisionerJobsByOrganizationAndStatusWithQueuePositionAndProvisionerParams) ([]GetProvisionerJobsByOrganizationAndStatusWithQueuePositionAndProvisionerRow, error) {
@@ -6337,6 +6365,12 @@ func (q *sqlQuerier) GetProvisionerJobsByOrganizationAndStatusWithQueuePositionA
 			&i.QueuePosition,
 			&i.QueueSize,
 			pq.Array(&i.AvailableWorkers),
+			&i.TemplateVersionName,
+			&i.TemplateID,
+			&i.TemplateName,
+			&i.TemplateDisplayName,
+			&i.WorkspaceID,
+			&i.WorkspaceName,
 		); err != nil {
 			return nil, err
 		}
@@ -11761,6 +11795,141 @@ func (q *sqlQuerier) UpsertWorkspaceAgentPortShare(ctx context.Context, arg Upse
 		&i.Port,
 		&i.ShareLevel,
 		&i.Protocol,
+	)
+	return i, err
+}
+
+const fetchMemoryResourceMonitorsByAgentID = `-- name: FetchMemoryResourceMonitorsByAgentID :one
+SELECT
+	agent_id, enabled, threshold, created_at
+FROM
+	workspace_agent_memory_resource_monitors
+WHERE
+	agent_id = $1
+`
+
+func (q *sqlQuerier) FetchMemoryResourceMonitorsByAgentID(ctx context.Context, agentID uuid.UUID) (WorkspaceAgentMemoryResourceMonitor, error) {
+	row := q.db.QueryRowContext(ctx, fetchMemoryResourceMonitorsByAgentID, agentID)
+	var i WorkspaceAgentMemoryResourceMonitor
+	err := row.Scan(
+		&i.AgentID,
+		&i.Enabled,
+		&i.Threshold,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const fetchVolumesResourceMonitorsByAgentID = `-- name: FetchVolumesResourceMonitorsByAgentID :many
+SELECT
+	agent_id, enabled, threshold, path, created_at
+FROM
+	workspace_agent_volume_resource_monitors
+WHERE
+	agent_id = $1
+`
+
+func (q *sqlQuerier) FetchVolumesResourceMonitorsByAgentID(ctx context.Context, agentID uuid.UUID) ([]WorkspaceAgentVolumeResourceMonitor, error) {
+	rows, err := q.db.QueryContext(ctx, fetchVolumesResourceMonitorsByAgentID, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WorkspaceAgentVolumeResourceMonitor
+	for rows.Next() {
+		var i WorkspaceAgentVolumeResourceMonitor
+		if err := rows.Scan(
+			&i.AgentID,
+			&i.Enabled,
+			&i.Threshold,
+			&i.Path,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const insertMemoryResourceMonitor = `-- name: InsertMemoryResourceMonitor :one
+INSERT INTO
+	workspace_agent_memory_resource_monitors (
+		agent_id,
+		enabled,
+		threshold,
+		created_at
+	)
+VALUES
+	($1, $2, $3, $4) RETURNING agent_id, enabled, threshold, created_at
+`
+
+type InsertMemoryResourceMonitorParams struct {
+	AgentID   uuid.UUID `db:"agent_id" json:"agent_id"`
+	Enabled   bool      `db:"enabled" json:"enabled"`
+	Threshold int32     `db:"threshold" json:"threshold"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+}
+
+func (q *sqlQuerier) InsertMemoryResourceMonitor(ctx context.Context, arg InsertMemoryResourceMonitorParams) (WorkspaceAgentMemoryResourceMonitor, error) {
+	row := q.db.QueryRowContext(ctx, insertMemoryResourceMonitor,
+		arg.AgentID,
+		arg.Enabled,
+		arg.Threshold,
+		arg.CreatedAt,
+	)
+	var i WorkspaceAgentMemoryResourceMonitor
+	err := row.Scan(
+		&i.AgentID,
+		&i.Enabled,
+		&i.Threshold,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const insertVolumeResourceMonitor = `-- name: InsertVolumeResourceMonitor :one
+INSERT INTO
+	workspace_agent_volume_resource_monitors (
+		agent_id,
+		path,
+		enabled,
+		threshold,
+		created_at
+	)
+VALUES
+	($1, $2, $3, $4, $5) RETURNING agent_id, enabled, threshold, path, created_at
+`
+
+type InsertVolumeResourceMonitorParams struct {
+	AgentID   uuid.UUID `db:"agent_id" json:"agent_id"`
+	Path      string    `db:"path" json:"path"`
+	Enabled   bool      `db:"enabled" json:"enabled"`
+	Threshold int32     `db:"threshold" json:"threshold"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+}
+
+func (q *sqlQuerier) InsertVolumeResourceMonitor(ctx context.Context, arg InsertVolumeResourceMonitorParams) (WorkspaceAgentVolumeResourceMonitor, error) {
+	row := q.db.QueryRowContext(ctx, insertVolumeResourceMonitor,
+		arg.AgentID,
+		arg.Path,
+		arg.Enabled,
+		arg.Threshold,
+		arg.CreatedAt,
+	)
+	var i WorkspaceAgentVolumeResourceMonitor
+	err := row.Scan(
+		&i.AgentID,
+		&i.Enabled,
+		&i.Threshold,
+		&i.Path,
+		&i.CreatedAt,
 	)
 	return i, err
 }

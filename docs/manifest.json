@@ -291,7 +291,7 @@
 						{
 							"title": "Organizations",
 							"path": "./admin/users/organizations.md",
-							"state": ["premium", "beta"]
+							"state": ["premium"]
 						},
 						{
 							"title": "Quotas",
@@ -503,6 +503,11 @@
 							"title": "Island Secure Browser",
 							"description": "Integrate Coder with Island's Secure Browser",
 							"path": "./admin/integrations/island.md"
+						},
+						{
+							"title": "DX PlatformX",
+							"description": "Integrate Coder with DX PlatformX",
+							"path": "./admin/integrations/platformx.md"
 						},
 						{
 							"title": "Hashicorp Vault",

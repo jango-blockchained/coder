@@ -13125,6 +13125,9 @@ const docTemplate = `{
                 "input": {
                     "$ref": "#/definitions/codersdk.ProvisionerJobInput"
                 },
+                "metadata": {
+                    "$ref": "#/definitions/codersdk.ProvisionerJobMetadata"
+                },
                 "organization_id": {
                     "type": "string",
                     "format": "uuid"
@@ -13216,6 +13219,31 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "stage": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ProvisionerJobMetadata": {
+            "type": "object",
+            "properties": {
+                "template_display_name": {
+                    "type": "string"
+                },
+                "template_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "template_name": {
+                    "type": "string"
+                },
+                "template_version_name": {
+                    "type": "string"
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "workspace_name": {
                     "type": "string"
                 }
             }
@@ -13475,6 +13503,7 @@ const docTemplate = `{
                 "template",
                 "user",
                 "workspace",
+                "workspace_agent_resource_monitor",
                 "workspace_dormant",
                 "workspace_proxy"
             ],
@@ -13510,6 +13539,7 @@ const docTemplate = `{
                 "ResourceTemplate",
                 "ResourceUser",
                 "ResourceWorkspace",
+                "ResourceWorkspaceAgentResourceMonitor",
                 "ResourceWorkspaceDormant",
                 "ResourceWorkspaceProxy"
             ]
